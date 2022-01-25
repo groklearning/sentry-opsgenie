@@ -79,6 +79,7 @@ class OpsGeniePlugin(notify.NotificationPlugin):
                 'Checksum': group.checksum,
                 'Project ID': group.project.slug,
                 'Project Name': group.project.name,
+                'Logger': group.logger,
                 'Level': group.get_level_display(),
                 'URL': group.get_absolute_url(),
                 'Triggering Rules': json.dumps(triggering_rules),
