@@ -70,7 +70,7 @@ class OpsGeniePlugin(notify.NotificationPlugin):
 
     def build_payload(self, group, event, triggering_rules):
         payload = {
-            'message': event.message,
+            'message': f'View {group.get_absolute_url()}',
             'alias': 'sentry: %d' % group.id,
             'source': 'Sentry',
             'details': {
