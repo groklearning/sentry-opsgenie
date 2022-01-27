@@ -68,10 +68,17 @@ class OpsGeniePlugin(notify.NotificationPlugin):
             'alert_url': 'https://api.opsgenie.com/v2/alerts',
         }
 
+    def _get_event_tags_payload_data(self, event_tags_items):
+        return [
+            '%s:%s' % (str(x).replace(',', ''), str(y).replace(',', ''))
+            for x, y
+            in event_tags_items
+        ]
+
     def build_payload(self, group, event, triggering_rules):
         payload = {
             'message': f'View {group.get_absolute_url()}',
-            'alias': 'sentry: %d' % group.id,
+            'alias': 'sentry: %d' % group.id,  # Adding sentry id
             'source': 'Sentry',
             'details': {
                 'Sentry ID': str(group.id),
@@ -87,13 +94,29 @@ class OpsGeniePlugin(notify.NotificationPlugin):
             'entity': group.culprit,
         }
 
-        payload['tags'] = [
-            '%s:%s' % (str(x).replace(',', ''), str(y).replace(',', ''))
-            for x, y
-            in event.get_tags()
-        ]
+        payload['tags'] = self._get_event_tags_payload_data(event.get_tags())
 
         return payload
+
+    def _get_paginated_opsgenie_responses(self, url, json=None, headers=None):
+        '''
+        Get list of all JSON responses (after accumulating paginated data).
+        '''
+        responses = []
+        resp = http.safe_urlopen(url, json=json, headers=headers)
+        resp_json = resp.json()
+        if not resp.ok:
+            raise HTTPError('Unsuccessful response from OpsGenie: %s' % resp_json)
+        responses.append(resp_json)
+        # TODO = confirm that paging->next not populated in response if no more links
+        while 'paging' in resp_json and 'next' in resp_json['paging']:
+            resp = http.safe_urlopen(url, json=json, headers=headers)
+            resp_json = resp.json()
+            if not resp.ok:
+                raise HTTPError('Unsuccessful response from OpsGenie: %s' % resp_json)
+            responses.append(resp_json)
+        return responses
+
 
     def notify_users(self, group, event, fail_silently=False, triggering_rules=None, **kwargs):
         if not self.is_configured(group.project):
@@ -110,7 +133,21 @@ class OpsGeniePlugin(notify.NotificationPlugin):
         if recipients:
             payload['recipients'] = recipients
 
-        resp = http.safe_urlopen(alert_url, json=payload, headers=headers)
-        if not resp.ok:
-            raise HTTPError(
-                'Unsuccessful response from OpsGenie: %s' % resp.json())
+        self._get_paginated_opsgenie_responses(alert_url, json=payload, headers=headers)
+
+        # Get alert ids paired with their Sentry ids (the alias field)
+        # GET request as didn't supply data or json
+        list_alerts_responses = self._get_paginated_opsgenie_responses('https://api.opsgenie.com/v2/alerts', headers=headers)
+        alerts = [(alert['id'], alert['alias']) for response in list_alerts_responses for alert in response['data']]
+
+        event_tags_items = event.get_tags()
+        event_tags = dict(event_tags_items)
+        for alert_id, sentry_id in alerts:
+            if sentry_id == 'sentry: %d' % group.id:
+                if 'PII_free_category' in event_tags:
+                    # Update message with tag if available
+                    self._get_paginated_opsgenie_responses(f'https://api.opsgenie.com/v2/alerts/{alert_id}/message', json={'message': event_tags['PII_free_category']}, headers=headers)
+
+                # Add any Sentry tags missing in Opsgenie
+                tags_payload = {'tags': self._get_event_tags_payload_data(event_tags_items)}
+                self._get_paginated_opsgenie_responses(f'https://api.opsgenie.com/v2/alerts/{alert_id}/tags', json=tags_payload, headers=headers)
